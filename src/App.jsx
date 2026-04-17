@@ -3,8 +3,8 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 const DEFAULT_FPS = 2;
-const MAX_PIXELS_MOBILE = 1280 * 720;
-const MAX_FRAMES_MOBILE = 80;
+const MAX_PIXELS_MOBILE_BASE = 1280 * 720;
+const MAX_FRAMES_MOBILE_BASE = 80;
 const MAX_FRAMES_DESKTOP = 180;
 const SEARCH_RADIUS = 8;
 const STEP = 2;
@@ -20,6 +20,31 @@ function isMobileDevice() {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function getDeviceCapabilities() {
+  const memoryGb = Number(navigator.deviceMemory || 4);
+  const cores = Number(navigator.hardwareConcurrency || 4);
+  return {
+    memoryGb,
+    cores,
+    strongDevice: memoryGb >= 6 || cores >= 6
+  };
+}
+
+function getAdaptiveMobileLimits() {
+  const { strongDevice } = getDeviceCapabilities();
+  if (strongDevice) {
+    return {
+      maxFrames: 180,
+      maxPixels: 1920 * 1080
+    };
+  }
+
+  return {
+    maxFrames: MAX_FRAMES_MOBILE_BASE,
+    maxPixels: MAX_PIXELS_MOBILE_BASE
+  };
 }
 
 function createVideoElement(file) {
@@ -229,6 +254,7 @@ export default function App() {
   const [fps, setFps] = useState(DEFAULT_FPS);
   const [alignFrames, setAlignFrames] = useState(true);
   const [downscale, setDownscale] = useState(true);
+  const [ignoreMobileLimits, setIgnoreMobileLimits] = useState(false);
   const [status, setStatus] = useState("Select video, then hit Generate.");
   const [progress, setProgress] = useState(0);
   const [outputUrl, setOutputUrl] = useState("");
@@ -237,6 +263,7 @@ export default function App() {
   const canvasRef = useRef(null);
 
   const mobile = useMemo(() => isMobileDevice(), []);
+  const deviceCaps = useMemo(() => getDeviceCapabilities(), []);
 
   async function run() {
     if (!videoFile || processing) return;
@@ -272,13 +299,15 @@ export default function App() {
       const height = Math.max(2, Math.floor(baseHeight * scale));
 
       const frameTimes = buildFrameTimes(video.duration, Number(fps));
-      const maxFrames = mobile ? MAX_FRAMES_MOBILE : MAX_FRAMES_DESKTOP;
-      if (frameTimes.length > maxFrames) {
+      const adaptiveLimits = mobile ? getAdaptiveMobileLimits() : null;
+      const maxFrames = mobile ? adaptiveLimits.maxFrames : MAX_FRAMES_DESKTOP;
+      const maxPixels = mobile ? adaptiveLimits.maxPixels : Number.POSITIVE_INFINITY;
+      if (!ignoreMobileLimits && frameTimes.length > maxFrames) {
         throw new Error(
           `Too many frames (${frameTimes.length}). Lower FPS or trim clip. Limit on this device: ${maxFrames}.`
         );
       }
-      if (mobile && width * height > MAX_PIXELS_MOBILE) {
+      if (!ignoreMobileLimits && mobile && width * height > maxPixels) {
         throw new Error(
           "Resolution too high for mobile processing. Enable downscale or use a lower-resolution clip."
         );
@@ -393,6 +422,24 @@ export default function App() {
           />
           <span>Downscale on mobile (safer)</span>
         </label>
+
+        {mobile ? (
+          <>
+            <p className="hint">
+              Mobile profile: {deviceCaps.memoryGb}GB RAM hint, {deviceCaps.cores} CPU threads.
+              {deviceCaps.strongDevice ? " Strong mode enabled." : " Safe mode enabled."}
+            </p>
+            <label className="row">
+              <input
+                type="checkbox"
+                checked={ignoreMobileLimits}
+                onChange={(event) => setIgnoreMobileLimits(event.target.checked)}
+                disabled={processing}
+              />
+              <span>Ignore mobile safety limits (advanced)</span>
+            </label>
+          </>
+        ) : null}
 
         <button onClick={run} disabled={!videoFile || processing}>
           {processing ? "Working..." : "Generate Long Exposure"}

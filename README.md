@@ -10,6 +10,8 @@ Browser app that converts video into a long-exposure image.
 - Auto-convert unsupported video formats (like MOV/MKV) to MP4 in browser
 - Generate one averaged output image
 - Download JPG result
+- Adaptive mobile limits (strong phones get higher limits)
+- Optional advanced toggle to ignore mobile safety limits
 
 ## Local run
 
