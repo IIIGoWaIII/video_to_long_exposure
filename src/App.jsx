@@ -45,13 +45,18 @@ function buildTonemapLut() {
 
 const TONEMAP_LUT = buildTonemapLut();
 
-function applyTonemap(hdrFloat, width, height, exposure, lut) {
+function applyTonemap(hdrFloat, counts, width, height, exposure, frameCount, lut) {
   const result = new Uint8ClampedArray(width * height * 4);
   for (let i = 0; i < width * height; i++) {
     const idx = i * 4;
-    const r = hdrFloat[idx] * exposure;
-    const g = hdrFloat[idx + 1] * exposure;
-    const b = hdrFloat[idx + 2] * exposure;
+    let r = hdrFloat[idx] * exposure;
+    let g = hdrFloat[idx + 1] * exposure;
+    let b = hdrFloat[idx + 2] * exposure;
+    if (counts && counts[i] > 0) {
+      r /= counts[i];
+      g /= counts[i];
+      b /= counts[i];
+    }
     const tonemappedR = acesTonemap(r);
     const tonemappedG = acesTonemap(g);
     const tonemappedB = acesTonemap(b);
@@ -204,6 +209,25 @@ function addFrameToHdrAccumulator(frameData, hdrBuffer, width, height, shiftX, s
   }
 }
 
+function addFrameToMeanAccumulator(frameData, hdrBuffer, counts, width, height, shiftX, shiftY) {
+  const data = frameData.data;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const sourceX = x - shiftX;
+      const sourceY = y - shiftY;
+      if (sourceX < 0 || sourceY < 0 || sourceX >= width || sourceY >= height) continue;
+      const dstPixel = y * width + x;
+      const srcPixel = sourceY * width + sourceX;
+      const srcIdx = srcPixel * 4;
+      const dstIdx = dstPixel * 4;
+      hdrBuffer[dstIdx] += degamma(data[srcIdx] / 255);
+      hdrBuffer[dstIdx + 1] += degamma(data[srcIdx + 1] / 255);
+      hdrBuffer[dstIdx + 2] += degamma(data[srcIdx + 2] / 255);
+      counts[dstPixel]++;
+    }
+  }
+}
+
 function buildFrameTimes(duration, fps) {
   const interval = 1 / fps;
   const times = [];
@@ -227,6 +251,7 @@ export default function App() {
   const [alignFrames, setAlignFrames] = useState(true);
   const [downscale, setDownscale] = useState(true);
   const [exposure, setExposure] = useState(1);
+  const [meanBlend, setMeanBlend] = useState(false);
   const [ignoreMobileLimits, setIgnoreMobileLimits] = useState(false);
   const [status, setStatus] = useState("Select video, then hit Generate.");
   const [progress, setProgress] = useState(0);
@@ -296,9 +321,18 @@ export default function App() {
       }
 
       const hdrBuffer = new Float32Array(width * height * 4);
+      const counts = meanBlend ? new Uint32Array(width * height) : null;
       let refDownscaled = null;
 
-      setStatus(alignFrames ? "Aligning and accumulating HDR..." : "Accumulating HDR...");
+      setStatus(
+        alignFrames
+          ? meanBlend
+            ? "Aligning and averaging..."
+            : "Aligning and accumulating HDR..."
+          : meanBlend
+          ? "Averaging..."
+          : "Accumulating HDR..."
+      );
 
       for (let i = 0; i < frameCache.length; i++) {
         const frame = frameCache[i];
@@ -315,7 +349,11 @@ export default function App() {
           }
         }
 
-        addFrameToHdrAccumulator(frame, hdrBuffer, width, height, shiftX, shiftY);
+        if (meanBlend) {
+          addFrameToMeanAccumulator(frame, hdrBuffer, counts, width, height, shiftX, shiftY);
+        } else {
+          addFrameToHdrAccumulator(frame, hdrBuffer, width, height, shiftX, shiftY);
+        }
         setProgress(40 + Math.round(((i + 1) / frameCache.length) * 40));
       }
 
@@ -323,7 +361,7 @@ export default function App() {
 
       setProgress(85);
 
-      const tonemapped = applyTonemap(hdrBuffer, width, height, exposure, TONEMAP_LUT);
+      const tonemapped = applyTonemap(hdrBuffer, counts, width, height, exposure, meanBlend ? frameCache.length : 1, TONEMAP_LUT);
       const result = new ImageData(tonemapped, width, height);
 
       const previewCanvas = canvasRef.current;
@@ -368,6 +406,11 @@ export default function App() {
         <label className="field">
           <span>Exposure</span>
           <input type="number" min="0.01" max="4" step="0.01" value={exposure} onChange={(e) => setExposure(Number(e.target.value))} disabled={processing} />
+        </label>
+
+        <label className="row">
+          <input type="checkbox" checked={meanBlend} onChange={(e) => setMeanBlend(e.target.checked)} disabled={processing} />
+          <span>Mean blend (average frames)</span>
         </label>
 
         <label className="row">
