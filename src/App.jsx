@@ -1,4 +1,6 @@
 import { useMemo, useRef, useState } from "react";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 const DEFAULT_FPS = 2;
 const MAX_PIXELS_MOBILE = 1280 * 720;
@@ -7,6 +9,10 @@ const MAX_FRAMES_DESKTOP = 180;
 const SEARCH_RADIUS = 8;
 const STEP = 2;
 const SCALE_FOR_ALIGN = 0.25;
+const FFMPEG_BASE_URL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+
+let ffmpegSingleton = null;
+let ffmpegLoadPromise = null;
 
 function isMobileDevice() {
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -35,6 +41,56 @@ function createVideoElement(file) {
       URL.revokeObjectURL(objectUrl);
       reject(new Error("Could not read this video file."));
     };
+  });
+}
+
+async function getFfmpeg(setStatus) {
+  if (ffmpegSingleton) return ffmpegSingleton;
+  if (ffmpegLoadPromise) return ffmpegLoadPromise;
+
+  ffmpegLoadPromise = (async () => {
+    setStatus("Loading converter...");
+    const ffmpeg = new FFmpeg();
+    const coreURL = await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.js`, "text/javascript");
+    const wasmURL = await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.wasm`, "application/wasm");
+    await ffmpeg.load({ coreURL, wasmURL });
+    ffmpegSingleton = ffmpeg;
+    return ffmpeg;
+  })();
+
+  return ffmpegLoadPromise;
+}
+
+async function transcodeToMp4(file, setStatus) {
+  const ffmpeg = await getFfmpeg(setStatus);
+  setStatus("Converting input to MP4...");
+
+  const safeInputName = `input-${Date.now()}.bin`;
+  const outputName = `converted-${Date.now()}.mp4`;
+
+  await ffmpeg.writeFile(safeInputName, await fetchFile(file));
+  await ffmpeg.exec([
+    "-i",
+    safeInputName,
+    "-movflags",
+    "faststart",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-c:a",
+    "aac",
+    outputName
+  ]);
+
+  const data = await ffmpeg.readFile(outputName);
+  await ffmpeg.deleteFile(safeInputName);
+  await ffmpeg.deleteFile(outputName);
+
+  return new File([data.buffer], `${file.name.replace(/\.[^/.]+$/, "") || "video"}.mp4`, {
+    type: "video/mp4"
   });
 }
 
@@ -195,9 +251,17 @@ export default function App() {
     setStatus("Loading video...");
 
     let objectUrl = "";
+    let workingFile = videoFile;
 
     try {
-      const { video, objectUrl: localUrl } = await createVideoElement(videoFile);
+      let videoResult;
+      try {
+        videoResult = await createVideoElement(workingFile);
+      } catch {
+        workingFile = await transcodeToMp4(videoFile, setStatus);
+        videoResult = await createVideoElement(workingFile);
+      }
+      const { video, objectUrl: localUrl } = videoResult;
       objectUrl = localUrl;
 
       const baseWidth = video.videoWidth;
