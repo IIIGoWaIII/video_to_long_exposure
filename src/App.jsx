@@ -226,6 +226,27 @@ function addFrameToAccumulator(frameData, sums, counts, width, height, shiftX, s
   }
 }
 
+function addFrameToMaxAccumulator(frameData, maxes, width, height, shiftX, shiftY) {
+  const data = frameData.data;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = x - shiftX;
+      const sourceY = y - shiftY;
+      if (sourceX < 0 || sourceY < 0 || sourceX >= width || sourceY >= height) {
+        continue;
+      }
+      const dstPixel = y * width + x;
+      const srcPixel = sourceY * width + sourceX;
+      const srcIdx = srcPixel * 4;
+      const dstIdx = dstPixel * 4;
+      if (data[srcIdx] > maxes[dstIdx]) maxes[dstIdx] = data[srcIdx];
+      if (data[srcIdx + 1] > maxes[dstIdx + 1]) maxes[dstIdx + 1] = data[srcIdx + 1];
+      if (data[srcIdx + 2] > maxes[dstIdx + 2]) maxes[dstIdx + 2] = data[srcIdx + 2];
+      if (data[srcIdx + 3] > maxes[dstIdx + 3]) maxes[dstIdx + 3] = data[srcIdx + 3];
+    }
+  }
+}
+
 function makeResultImage(sums, counts, width, height) {
   const result = new ImageData(width, height);
   const out = result.data;
@@ -254,6 +275,7 @@ export default function App() {
   const [fps, setFps] = useState(DEFAULT_FPS);
   const [alignFrames, setAlignFrames] = useState(true);
   const [downscale, setDownscale] = useState(true);
+  const [lightMode, setLightMode] = useState(true);
   const [ignoreMobileLimits, setIgnoreMobileLimits] = useState(false);
   const [status, setStatus] = useState("Select video, then hit Generate.");
   const [progress, setProgress] = useState(0);
@@ -336,9 +358,18 @@ export default function App() {
 
       const sums = new Float64Array(width * height * 4);
       const counts = new Uint32Array(width * height);
+      const maxes = new Uint8ClampedArray(width * height * 4);
       let refDownscaled = null;
 
-      setStatus(alignFrames ? "Aligning and averaging..." : "Averaging...");
+      setStatus(
+        alignFrames
+          ? lightMode
+            ? "Aligning and preserving light..."
+            : "Aligning and averaging..."
+          : lightMode
+          ? "Preserving light trails..."
+          : "Averaging..."
+      );
 
       for (let i = 0; i < frameCache.length; i += 1) {
         const frame = frameCache[i];
@@ -356,15 +387,21 @@ export default function App() {
           }
         }
 
-        addFrameToAccumulator(frame, sums, counts, width, height, shiftX, shiftY);
+        if (lightMode) {
+          addFrameToMaxAccumulator(frame, maxes, width, height, shiftX, shiftY);
+        } else {
+          addFrameToAccumulator(frame, sums, counts, width, height, shiftX, shiftY);
+        }
         setProgress(50 + Math.round(((i + 1) / frameCache.length) * 50));
       }
 
-      const result = makeResultImage(sums, counts, width, height);
+      const result = lightMode
+        ? new ImageData(new Uint8ClampedArray(maxes.buffer), width, height)
+        : makeResultImage(sums, counts, width, height);
       previewCtx.putImageData(result, 0, 0);
       const finalUrl = previewCanvas.toDataURL("image/jpeg", 0.95);
       setOutputUrl(finalUrl);
-      setStatus("Done. Download your long exposure image.");
+      setStatus(lightMode ? "Done. Download your light trail image." : "Done. Download your long exposure image.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error.");
       setStatus("Failed.");
@@ -420,7 +457,17 @@ export default function App() {
             onChange={(event) => setDownscale(event.target.checked)}
             disabled={processing}
           />
-          <span>Downscale on mobile (safer)</span>
+          <span>Downscale on mobile (saver)</span>
+        </label>
+
+        <label className="row">
+          <input
+            type="checkbox"
+            checked={lightMode}
+            onChange={(event) => setLightMode(event.target.checked)}
+            disabled={processing}
+          />
+          <span>Light trails (preserve bright light)</span>
         </label>
 
         {mobile ? (
