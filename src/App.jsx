@@ -228,6 +228,40 @@ function addFrameToMeanAccumulator(frameData, hdrBuffer, counts, width, height, 
   }
 }
 
+function addFrameToOriginalMeanAccumulator(frameData, sums, width, height, shiftX, shiftY) {
+  const data = frameData.data;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const sourceX = x - shiftX;
+      const sourceY = y - shiftY;
+      const dstPixel = y * width + x;
+      const dstIdx = dstPixel * 4;
+      if (sourceX < 0 || sourceY < 0 || sourceX >= width || sourceY >= height) {
+        continue;
+      }
+      const srcPixel = sourceY * width + sourceX;
+      const srcIdx = srcPixel * 4;
+      sums[dstIdx] += data[srcIdx];
+      sums[dstIdx + 1] += data[srcIdx + 1];
+      sums[dstIdx + 2] += data[srcIdx + 2];
+      sums[dstIdx + 3] += data[srcIdx + 3];
+    }
+  }
+}
+
+function makeOriginalMeanImage(sums, width, height, frameCount) {
+  const out = new Uint8ClampedArray(width * height * 4);
+  const denominator = Math.max(1, frameCount);
+  for (let i = 0; i < width * height; i++) {
+    const idx = i * 4;
+    out[idx] = Math.round(sums[idx] / denominator);
+    out[idx + 1] = Math.round(sums[idx + 1] / denominator);
+    out[idx + 2] = Math.round(sums[idx + 2] / denominator);
+    out[idx + 3] = Math.round(sums[idx + 3] / denominator);
+  }
+  return new ImageData(out, width, height);
+}
+
 function buildFrameTimes(duration, fps) {
   const interval = 1 / fps;
   const times = [];
@@ -252,6 +286,7 @@ export default function App() {
   const [downscale, setDownscale] = useState(true);
   const [exposure, setExposure] = useState(1);
   const [meanBlend, setMeanBlend] = useState(false);
+  const [originalMeanBlend, setOriginalMeanBlend] = useState(false);
   const [ignoreMobileLimits, setIgnoreMobileLimits] = useState(false);
   const [status, setStatus] = useState("Select video, then hit Generate.");
   const [progress, setProgress] = useState(0);
@@ -322,13 +357,18 @@ export default function App() {
 
       const hdrBuffer = new Float32Array(width * height * 4);
       const counts = meanBlend ? new Uint32Array(width * height) : null;
+      const originalSums = originalMeanBlend ? new Float64Array(width * height * 4) : null;
       let refDownscaled = null;
 
       setStatus(
         alignFrames
-          ? meanBlend
+          ? originalMeanBlend
+            ? "Aligning and original mean blending..."
+            : meanBlend
             ? "Aligning and averaging..."
             : "Aligning and accumulating HDR..."
+          : originalMeanBlend
+          ? "Original mean blending..."
           : meanBlend
           ? "Averaging..."
           : "Accumulating HDR..."
@@ -349,7 +389,9 @@ export default function App() {
           }
         }
 
-        if (meanBlend) {
+        if (originalMeanBlend) {
+          addFrameToOriginalMeanAccumulator(frame, originalSums, width, height, shiftX, shiftY);
+        } else if (meanBlend) {
           addFrameToMeanAccumulator(frame, hdrBuffer, counts, width, height, shiftX, shiftY);
         } else {
           addFrameToHdrAccumulator(frame, hdrBuffer, width, height, shiftX, shiftY);
@@ -357,12 +399,24 @@ export default function App() {
         setProgress(40 + Math.round(((i + 1) / frameCache.length) * 40));
       }
 
-      setStatus("Applying tonemapping...");
-
       setProgress(85);
-
-      const tonemapped = applyTonemap(hdrBuffer, counts, width, height, exposure, meanBlend ? frameCache.length : 1, TONEMAP_LUT);
-      const result = new ImageData(tonemapped, width, height);
+      let result;
+      if (originalMeanBlend) {
+        setStatus("Building original mean blend...");
+        result = makeOriginalMeanImage(originalSums, width, height, frameCache.length);
+      } else {
+        setStatus("Applying tonemapping...");
+        const tonemapped = applyTonemap(
+          hdrBuffer,
+          counts,
+          width,
+          height,
+          exposure,
+          meanBlend ? frameCache.length : 1,
+          TONEMAP_LUT
+        );
+        result = new ImageData(tonemapped, width, height);
+      }
 
       const previewCanvas = canvasRef.current;
       previewCanvas.width = width;
@@ -411,6 +465,16 @@ export default function App() {
         <label className="row">
           <input type="checkbox" checked={meanBlend} onChange={(e) => setMeanBlend(e.target.checked)} disabled={processing} />
           <span>Mean blend (average frames)</span>
+        </label>
+
+        <label className="row">
+          <input
+            type="checkbox"
+            checked={originalMeanBlend}
+            onChange={(e) => setOriginalMeanBlend(e.target.checked)}
+            disabled={processing}
+          />
+          <span>Original mean blending (classic, no tonemap)</span>
         </label>
 
         <label className="row">

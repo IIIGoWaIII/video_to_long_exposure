@@ -7,6 +7,7 @@ Browser app that converts video into a long-exposure image.
 - Upload a video file
 - Choose frame rate (default `2`, same as your bash script)
 - Toggle **Align frames** checkbox
+- Optional **Original mean blending** checkbox for classic simple averaging
 - Auto-convert unsupported video formats (like MOV/MKV) to MP4 in browser
 - Generate one averaged output image
 - Download JPG result
